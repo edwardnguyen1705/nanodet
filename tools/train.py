@@ -18,7 +18,7 @@ import warnings
 
 import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import ProgressBar
+from pytorch_lightning.callbacks import TQDMProgressBar
 
 from nanodet.data.collate import naive_collate
 from nanodet.data.dataset import build_dataset
@@ -122,7 +122,7 @@ def main(args):
         log_every_n_steps=cfg.log.interval,
         num_sanity_val_steps=0,
         resume_from_checkpoint=model_resume_path,
-        callbacks=[ProgressBar(refresh_rate=0)],  # disable tqdm bar
+        callbacks=[TQDMProgressBar(refresh_rate=0)],  # disable tqdm bar
         logger=logger,
         benchmark=True,
         gradient_clip_val=cfg.get("grad_clip", 0.0),
