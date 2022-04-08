@@ -15,11 +15,13 @@
 import argparse
 import os
 import warnings
+import copy
 
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import TQDMProgressBar
 
+from nanodet.model.arch import build_model
 from nanodet.data.collate import naive_collate
 from nanodet.data.dataset import build_dataset
 from nanodet.evaluator import build_evaluator
@@ -37,6 +39,7 @@ from nanodet.util import (
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", help="train config file path")
+    parser.add_argument("config_teacher", help="train config file path of a teacher model")
     parser.add_argument(
         "--local_rank", default=-1, type=int, help="node rank for distributed training"
     )
@@ -44,8 +47,18 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+def build_teacher(cfg_teacher):
+    teacher =  build_model(cfg_teacher.model)
+    ckpt = torch.load(cfg_teacher.schedule.load_model, map_location="cpu")
+    gpus = cfg_teacher.device.gpu_ids
+    teacher = teacher.to(gpus[-1])
+    for param in teacher.parameters():
+        param.requires_grad = False
+    teacher.eval()
+    return teacher
 
 def main(args):
+    cfg_teacher = copy.deepcopy(cfg)
     load_config(cfg, args.config)
     if cfg.model.arch.head.num_classes != len(cfg.class_names):
         raise ValueError(
@@ -92,7 +105,10 @@ def main(args):
     )
 
     logger.info("Creating model...")
-    task = TrainingTask(cfg, evaluator)
+    load_config(cfg_teacher, args.config_teacher)
+    teacher = build_teacher(cfg_teacher)
+
+    task = TrainingTask(cfg, evaluator, teacher)
 
     if "load_model" in cfg.schedule:
         ckpt = torch.load(cfg.schedule.load_model)
