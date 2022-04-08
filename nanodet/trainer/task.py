@@ -22,6 +22,7 @@ import torch
 import torch.distributed as dist
 from pytorch_lightning import LightningModule
 from pytorch_lightning.utilities import rank_zero_only
+from pytorch_lightning.callbacks.progress import TQDMProgressBar
 
 from nanodet.data.batch_process import stack_batch_img
 from nanodet.util import convert_avg_params, gather_results, mkdir
@@ -39,7 +40,7 @@ class TrainingTask(LightningModule):
         evaluator: Evaluator for evaluating the model performance.
     """
 
-    def __init__(self, cfg, evaluator=None):
+    def __init__(self, cfg, evaluator=None, teacher=None):
         super(TrainingTask, self).__init__()
         self.cfg = cfg
         self.model = build_model(cfg.model)
@@ -52,6 +53,9 @@ class TrainingTask(LightningModule):
                 cfg.model.weight_averager, device=self.device
             )
             self.avg_model = copy.deepcopy(self.model)
+        
+        self.teacher = teacher
+        self.kd_loss = torch.nn.MSELoss()
 
     def _preprocess_batch_input(self, batch):
         batch_imgs = batch["img"]
@@ -72,10 +76,19 @@ class TrainingTask(LightningModule):
         results = self.model.head.post_process(preds, batch)
         return results
 
+    @torch.no_grad()
+    def get_pseudo_preds(self, batch):
+        preds = self.teacher(batch["img"])
+        return preds
+
     def training_step(self, batch, batch_idx):
         batch = self._preprocess_batch_input(batch)
         preds, loss, loss_states = self.model.forward_train(batch)
 
+        if self.teacher and self.current_epoch > 100:
+            pseudo_preds = self.get_pseudo_preds(batch)
+            kd_loss = self.kd_loss(preds, pseudo_preds)
+            loss += 0.2 * kd_loss
         # log train losses
         if self.global_step % self.cfg.log.interval == 0:
             lr = self.optimizers().param_groups[0]["lr"]
@@ -278,9 +291,9 @@ class TrainingTask(LightningModule):
         optimizer.step(closure=optimizer_closure)
         optimizer.zero_grad()
 
-    def get_progress_bar_dict(self):
+    def TQDMProgressBar(self):
         # don't show the version number
-        items = super().get_progress_bar_dict()
+        items = TQDMProgressBar.get_metrics()
         items.pop("v_num", None)
         items.pop("loss", None)
         return items
@@ -330,7 +343,7 @@ class TrainingTask(LightningModule):
     def on_epoch_start(self):
         self.model.set_epoch(self.current_epoch)
 
-    def on_train_batch_end(self, outputs, batch, batch_idx, dataloader_idx) -> None:
+    def on_train_batch_end(self, outputs, batch, batch_idx) -> None:
         if self.weight_averager:
             self.weight_averager.update(self.model, self.global_step)
 
